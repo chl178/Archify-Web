@@ -13,7 +13,6 @@ archify-backup-original/
 backup-*/
 .zcode/
 .zcodeignore
-AGENTS.md
 dev-container.sh
 
 # ---- 日志与临时产物 ----
