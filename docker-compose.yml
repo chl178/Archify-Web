@@ -1,0 +1,35 @@
+# Archify-Web 一键容器化部署
+#
+#   docker compose up -d --build     # 构建并启动 → http://<主机IP>:8766
+#
+# 数据去向：
+#   - 图集数据（manifest / 图目录 / issues.db / agent 设置与会话 / 流水线状态）
+#     存具名卷 archify-gallery（/app/gallery），重建容器不丢
+#   - 主机上的代码项目挂到容器的 /data 下；网页里新建顶层目录时，
+#     「选择路径…」浏览的就是容器内磁盘，选中 /data/<项目> 作为存放路径
+#     （agent 的 cwd、代码取证、图落盘 <存放路径>/graph/<id>/ 都在容器内闭环）
+
+services:
+  archify-web:
+    build:
+      context: .
+      provenance: false   # 关掉 buildkit attestation，镜像体积更实
+    image: archify-web
+    container_name: archify-web
+    # server.mjs 会派生 node 子进程（archify 校验/渲染）与 Agent SDK 子进程，
+    # init 负责回收僵尸进程并正确转发停止信号
+    init: true
+    ports:
+      - "${ARCHIFY_PORT:-8766}:8766"   # 左侧主机端口可改，右侧容器内固定
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 手工 curl 调试图集写 API 的逃生口（默认关闭，见 AGENTS.md「写保护」）
+      # ARCHIFY_WRITE_KEY: change-me
+    volumes:
+      - archify-gallery:/app/gallery
+      # 主机项目根目录（绝对路径或改 ./projects 为别的相对路径）；首次会自动创建
+      - ${PROJECTS_DIR:-./projects}:/data
+    restart: unless-stopped
+
+volumes:
+  archify-gallery:

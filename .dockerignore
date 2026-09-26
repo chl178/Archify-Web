@@ -1,0 +1,24 @@
+# 构建上下文只保留运行所需；数据走挂卷（gallery）、备份与测试不进镜像
+node_modules
+archify/node_modules
+archify/test
+archify-backup-original
+gallery
+projects
+.git
+.zcode
+.zcodeignore
+*.log
+.tmp*
+.tmp-*.json
+backup-*
+.tmp-perf
+# 根目录遗留的旧数据文件（服务只读写 gallery/ 下的同名文件）
+cicd.json
+diagrams.json
+# 演示/测试产物，非运行时文件
+sample-*.json
+nested-*.html
+
+# README 截图（不进镜像）
+docs/

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "电商订单系统",
+    "locale": "zh-CN",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "user", "type": "frontend", "label": "用户", "pos": [60, 280], "size": [130, 60] },
+    {
+      "id": "order-svc", "type": "backend", "label": "订单服务", "pos": [340, 80],
+      "children": [
+        { "id": "order-api", "type": "backend", "label": "下单 API", "pos": [20, 10], "size": [150, 56] },
+        { "id": "stock", "type": "database", "label": "库存检查", "pos": [20, 90], "size": [150, 56] }
+      ]
+    },
+    {
+      "id": "pay-gw", "type": "security", "label": "支付网关", "pos": [660, 80],
+      "children": [
+        { "id": "risk", "type": "security", "label": "风控", "pos": [20, 10], "size": [150, 56] },
+        { "id": "channel", "type": "messagebus", "label": "支付渠道", "pos": [20, 130], "size": [150, 56] }
+      ]
+    },
+    { "id": "order-db", "type": "database", "label": "订单库", "pos": [660, 380], "size": [150, 60] }
+  ],
+  "connections": [
+    { "id": "e1", "from": "user", "to": "order-api", "label": "下单请求" },
+    { "id": "e2", "from": "order-api", "to": "stock" },
+    { "id": "e3", "from": "order-api", "to": "risk", "label": "创建支付单" },
+    { "id": "e4", "from": "risk", "to": "channel" },
+    { "id": "e5", "from": "stock", "to": "order-db", "label": "写入订单" },
+    { "id": "e6", "from": "channel", "to": "order-db", "label": "回写状态", "fromSide": "bottom", "toSide": "top" }
+  ]
+}

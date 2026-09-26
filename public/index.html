@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Archify 图集</title>
+  <link rel="stylesheet" href="/public/style.css">
+</head>
+<body>
+  <!-- Chrome 用户名自动填充诱饵：登录门 display:none 之后，密码管理器在页面加载时
+       找不到真正的用户名/密码字段，会转而把保存的用户名（如 test）填进页面上第一个
+       可见的输入框（侧栏搜索框），autocomplete=off 也拦不住。放一对「屏幕外但 DOM
+       可见」的诱饵字段让它填这里——display:none 会被跳过，必须离屏定位 -->
+  <form class="autofill-decoy" aria-hidden="true" autocomplete="on" onsubmit="return false;">
+    <input type="text" name="username" autocomplete="username" tabindex="-1">
+    <input type="password" name="password" autocomplete="current-password" tabindex="-1">
+  </form>
+  <!-- 多用户登录门（未登录时整屏覆盖，登录/创建账户通过后进入图集；admin 可见全局执行看板） -->
+  <div id="auth-gate" class="auth-gate hidden">
+    <form class="auth-card" id="auth-form" autocomplete="off">
+      <div class="auth-logo">🏛️</div>
+      <div class="auth-title">Archify 图集</div>
+      <div class="auth-sub" id="auth-sub">登录后进入图集 · 多用户各见各的 Agent 会话</div>
+      <label class="auth-field"><span>用户名</span>
+        <input type="text" id="auth-user" autocomplete="username" spellcheck="false" maxlength="30" autofocus>
+      </label>
+      <label class="auth-field"><span>密码</span>
+        <input type="password" id="auth-pass" autocomplete="current-password" maxlength="128">
+      </label>
+      <label class="auth-field hidden" id="auth-pass2-row"><span>确认密码</span>
+        <input type="password" id="auth-pass2" autocomplete="new-password" maxlength="128">
+      </label>
+      <label class="auth-field hidden" id="auth-key-row">
+        <span>GLM API Key</span>
+        <input type="password" id="auth-key" autocomplete="off" spellcheck="false" maxlength="200"
+               placeholder="你自己的智谱 API Key（open.bigmodel.cn 获取）">
+        <span class="label-sub">创建账户必填——你的 Agent 会话用这个 Key 计费，与全局 Key 隔离</span>
+      </label>
+      <div class="auth-error" id="auth-error"></div>
+      <button type="submit" class="btn primary auth-submit" id="auth-submit">登 录</button>
+      <button type="button" class="auth-switch" id="auth-switch">首次使用？创建新账户 →</button>
+    </form>
+  </div>
+
+  <div class="layout" id="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <button id="btn-agent" class="icon-btn" title="Agent 交互窗（Enter 唤起）" style="display:none">🤖</button>
+        <button id="btn-board-global" class="icon-btn" title="全局执行看板：正在运行 · 等待排队 · 最大并发数 · 历史记录">⏳</button>
+        <button id="btn-settings" class="icon-btn" title="设置">⚙</button>
+        <button id="btn-refresh" class="icon-btn" title="刷新">⟳</button>
+        <button id="btn-collapse" class="icon-btn" title="收起目录栏">«</button>
+      </div>
+      <div class="search-box">
+        <span class="search-icon">⌕</span>
+        <!-- Chrome 密码管理器连 type=search+autocomplete=off+诱饵都拦不住（聚焦时填充）：
+             初始 disabled（自动填充候选扫描会跳过 disabled 字段），首次点击由 app.js
+             启用并聚焦——字段在扫描时不存在于候选集，加载期/聚焦期都填不进来 -->
+        <input type="search" id="search" name="diagram-search" autocomplete="off" spellcheck="false" disabled
+               placeholder="搜索标题 / 类型 / 来源…">
+      </div>
+      <nav class="tree" id="tree"></nav>
+      <div class="sidebar-foot">
+        <!-- 登录用户栏：用户名 + 角色 + 改密码 + 退出登录（多用户） -->
+        <div class="user-bar hidden" id="user-bar">
+          <span class="user-avatar">👤</span>
+          <span class="user-name" id="user-name"></span>
+          <span class="user-role" id="user-role"></span>
+          <span class="user-actions">
+            <button class="icon-btn" id="btn-pass" title="账户设置（修改密码 / GLM API Key）">🔑</button>
+            <button class="icon-btn" id="btn-logout" title="退出登录">⏻</button>
+          </span>
+        </div>
+        <button id="btn-new-folder" class="btn sidebar-import">＋ 新建目录</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <div class="split" id="split">
+        <div class="grid-pane" id="grid-pane">
+          <div id="grid" class="grid"></div>
+          <div id="empty" class="empty hidden">
+            <p class="empty-main">这里没有图</p>
+            <p id="empty-hint">把鼠标移到左侧目录上点 ⇪ 导入，或先建一个项目目录。</p>
+          </div>
+        </div>
+        <!-- Issue 执行看板（占据图表区的整页视图，无弹窗），两级：
+             全局看板（侧栏头部 ⏳）= 执行队列（正在运行 + 等待排队 + 顶部全局最大并发数）+ 历史sheet（最近10次，可重新拉起）——不显示 issue 明细、没有立即执行；
+             项目级看板（目录行 ⚡）= 本项目 issue 队列（可单条立即执行，全局执行中禁用）+ 历史sheet（本项目最近10次，可重新拉起）+ 触发设置sheet。
+             新建图不在看板提交——走目录行「＋」提创建 issue（kind=new-feature），与其他 issue 一起排队执行 -->
+        <div id="board-view" class="board-view hidden">
+          <div class="board-head">
+            <button class="btn small" id="board-back">← 返回图表</button>
+            <span class="board-title" id="board-title">全局执行看板</span>
+            <nav class="board-tabs" id="board-tabs">
+              <button class="board-tab active" data-board-tab="queue">队列</button>
+              <button class="board-tab" data-board-tab="history">历史</button>
+              <button class="board-tab" data-board-tab="settings" id="board-tab-settings">触发设置</button>
+            </nav>
+            <span class="board-count" id="board-count"></span>
+            <span class="board-live" id="board-live">每 3 秒自动刷新</span>
+          </div>
+          <div class="board-body">
+            <div id="board-agent-warn" class="status err hidden">流水线通过 Agent 执行——请先在 ⚙ 设置中启用 Agent 并保存。</div>
+            <!-- sheet：队列 -->
+            <div class="board-queue" id="board-queue">
+              <div id="board-global-queue" class="hidden">
+                <div class="board-set-row global-conc">
+                  <label for="board-concurrency">最大并发数<span class="label-sub">一次运行中同时执行的 Agent 会话上限（1-8，全局生效，改动立即保存）</span></label>
+                  <input type="number" id="board-concurrency" min="1" max="8" step="1">
+                </div>
+                <div class="board-sec-title">正在运行<span class="label-sub">一 run 一卡（同项目可多 run 并行）；会话排队 = 等全局名额 / 同目录前一组 / 同图前一组</span></div>
+                <div class="board-tasks" id="board-global-running"></div>
+                <div class="board-sec-title">等待运行<span class="label-sub">有开启 issue、当前没在运行的项目（正在运行的项目的其余 issue 由其 run 或新触发处理）</span></div>
+                <div class="board-tasks" id="board-global-waiting"></div>
+              </div>
+              <div id="board-project-queue">
+                <div class="board-sec-title">待执行（开启的 issue）<span class="label-sub">缺陷类按图分组 · 创建类一组一图，多会话并发经 Agent 执行（有代码必结合代码）</span>
+                  <button class="btn small hidden" id="board-uncat-run" title="立即执行未分类范围内所有开启的 issue">▶ 立即执行</button>
+                </div>
+                <div class="board-busy hidden" id="board-busy">本项目有流水线在执行——未在处理的 issue 仍可「立即执行」（同项目可多运行并行，全局会话名额协调总并发）；进度看侧栏 ⏳ 全局执行看板。</div>
+                <div class="board-tasks" id="board-tasks"></div>
+              </div>
+            </div>
+            <!-- sheet：历史（全局=全部项目最近10次 / 项目=本项目最近10次；失败的可重新拉起） -->
+            <div class="board-history hidden" id="board-history">
+              <div class="board-sec-title">最近 10 次运行<span class="label-sub" id="board-history-scope"></span></div>
+              <div class="board-tasks" id="board-history-tasks"></div>
+            </div>
+            <!-- sheet：触发设置（仅项目级；未分类无自动触发，不显示该 sheet） -->
+            <div class="board-settings hidden" id="board-settings">
+              <div class="board-set-flex">
+                <div class="board-sec-title">触发方式<span class="label-sub">到量 ① 或 到时 ②，满足任一即自动执行；改动后需保存才生效</span></div>
+                <div class="board-set-row">
+                  <label for="board-model">执行模型<span class="label-sub">本项目流水线用哪个模型</span></label>
+                  <select id="board-model" class="set-input"><option value="">跟随全局设置</option></select>
+                  <button class="btn primary small" id="board-save">保存设置</button>
+                </div>
+                <div class="cicd-section">
+                  <div class="cicd-sec-head">
+                    <label class="cicd-switch"><input type="checkbox" id="board-issue-enabled"> 🐞 Issue AI 自动解决</label>
+                    <button class="btn small" id="board-issue-run" title="忽略阈值与间隔，立即执行当前所有开启 issue">▶ 立即运行</button>
+                  </div>
+                  <div class="cicd-fields">
+                    <div class="cicd-field">
+                      <label for="board-issue-threshold">触发数量</label>
+                      <input type="number" id="board-issue-threshold" min="1" max="100" step="1">
+                      <span class="field-unit">① 到量：范围内开启 issue（含创建类）达到 N 个即执行，不必等间隔</span>
+                    </div>
+                    <div class="cicd-field">
+                      <label for="board-issue-interval">触发间隔</label>
+                      <input type="number" id="board-issue-interval" min="1" max="10080" step="1">
+                      <span class="field-unit">分钟 · ② 到时：距上次运行满 N 分钟且还有开启 issue 即执行（失败后也等满 N 分钟再自动重试）</span>
+                    </div>
+                  </div>
+                  <div class="cicd-status" id="board-issue-status"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="detail-pane hidden" id="detail-pane">
+          <div class="detail-head">
+            <span id="detail-title" class="detail-title"></span>
+            <span id="detail-hint" class="detail-hint">滚轮缩放 · 右键拖动平移 · 双击复位</span>
+            <div class="detail-actions">
+              <button id="detail-issue" class="btn small" title="全部 Issue 列表视图">🐛 <span id="detail-issue-count">0</span></button>
+              <button id="issue-file-btn" class="btn small" title="提交模式：点击图中组件/连线/区域定位">🐞 提 issue</button>
+              <a id="detail-open" class="btn small" target="_blank" rel="noopener">新标签页</a>
+              <button id="detail-close" class="btn small">关闭</button>
+            </div>
+          </div>
+          <div class="detail-body">
+            <iframe id="detail-frame" title="diagram detail"></iframe>
+            <div id="issue-full-list" class="issue-full-list hidden">
+              <div class="ifl-head">
+                <button class="btn small" id="ifl-back">← 返回图表</button>
+                <span class="ifl-title" id="ifl-title">Issue</span>
+                <span class="ifl-count" id="ifl-count"></span>
+                <button class="btn small primary" id="ifl-new">＋ 新建</button>
+              </div>
+              <div class="ifl-list" id="ifl-list"></div>
+            </div>
+          </div>
+          <div class="detail-issues" id="detail-issues">
+            <div class="di-head">
+              <span class="di-title">Issue <span class="di-count" id="di-count"></span></span>
+              <button class="icon-btn" id="di-toggle" title="收起 / 展开">▾</button>
+            </div>
+            <div class="di-list" id="di-list"></div>
+            <div class="di-composer">
+              <div class="di-kind-row">
+                <select id="di-kind" class="di-kind" title="issue 类型：缺陷/改进挂在当前图上；创建新图是项目级需求（new feature），由流水线读代码生成新图">
+                  <option value="bug">🐞 缺陷 / 改进（挂在当前图）</option>
+                  <option value="new-feature">✨ 创建新图（new feature）</option>
+                </select>
+                <span class="di-kind-hint" id="di-kind-hint"></span>
+              </div>
+              <div class="tag-row" id="di-tags"></div>
+              <div class="issue-target hidden" id="di-target"></div>
+              <div class="di-composer-row">
+                <input type="text" id="di-title" class="name-input" autocomplete="off" placeholder="新 issue 标题（提交模式下点击图中组件/连线/区域添加标签）" maxlength="200">
+                <button class="btn primary small" id="di-submit">提交</button>
+              </div>
+              <textarea id="di-body" class="paste-area di-body-input" placeholder="描述（可选）：复现步骤、期望效果…"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 侧栏收起时的悬浮展开按钮 -->
+  <button id="btn-expand" class="icon-btn expand-float hidden" title="展开目录栏">»</button>
+
+  <!-- 新建目录弹窗 -->
+  <div id="folder-modal" class="modal hidden">
+    <div class="modal-card folder-card">
+      <div class="modal-head">
+        <span>新建目录</span>
+        <button class="icon-close" data-close="folder-modal">✕</button>
+      </div>
+      <div class="folder-form">
+        <div class="form-row">
+          <label>位置</label>
+          <div class="parent-path" id="folder-parent">顶层（项目根）</div>
+        </div>
+        <div class="form-row">
+          <label for="folder-name">目录名 <em>*</em></label>
+          <input type="text" id="folder-name" placeholder="例如：电商平台" autocomplete="off">
+        </div>
+        <div class="form-row" id="folder-local-row">
+          <label for="folder-local">
+            存放路径
+            <span class="label-sub">可选 · 图集服务器上的文件夹完整路径（远端部署=远端服务器路径）；图将保存到它的 graph\ 子目录</span>
+          </label>
+          <div class="path-row">
+            <input type="text" id="folder-local" placeholder="服务器路径，如 D:\code\nano-vllm 或 /home/user/nano-vllm（留空则存在图集默认位置）" autocomplete="off" spellcheck="false">
+            <button type="button" class="btn" id="btn-browse" title="在网页里浏览图集服务器的目录并选择项目路径（本地/远端部署均可用）">选择路径…</button>
+          </div>
+        </div>
+        <div id="folder-status" class="status hidden"></div>
+        <div class="form-actions">
+          <button class="btn" data-close="folder-modal">取消</button>
+          <button class="btn primary" id="btn-folder-create">创建</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 服务器路径浏览器（选择项目路径：图集服务器上的本地路径，本地/远端部署一致） -->
+  <div id="path-modal" class="modal hidden">
+    <div class="modal-card folder-card path-card">
+      <div class="modal-head">
+        <span>选择项目路径</span>
+        <button class="icon-close" data-close="path-modal">✕</button>
+      </div>
+      <div class="path-browser">
+        <div class="path-note">以下列出的是「图集服务器」上的目录（本地部署=本机磁盘；远端部署=远端服务器），兼容 Windows / Linux 路径</div>
+        <div class="path-crumb-row">
+          <button type="button" class="btn small" id="btn-path-up">↑ 上级</button>
+          <input type="text" id="path-current" placeholder="服务器路径，可直接粘贴跳转（如 D:\code\proj 或 /home/user/proj）" autocomplete="off" spellcheck="false">
+          <button type="button" class="btn small" id="btn-path-go">跳转</button>
+        </div>
+        <div id="path-entries" class="path-entries"></div>
+        <div id="path-status" class="status hidden"></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-close="path-modal">取消</button>
+          <button type="button" class="btn primary" id="btn-path-pick">选定此文件夹</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 账户设置弹窗：修改密码（核对原密码；成功后其他已登录设备强制下线）+ 个人 GLM API Key -->
+  <div id="pass-modal" class="modal hidden">
+    <div class="modal-card folder-card pass-card">
+      <div class="modal-head">
+        <span>账户设置</span>
+        <button class="icon-close" data-close="pass-modal">✕</button>
+      </div>
+      <div class="folder-form">
+        <div class="form-row">
+          <label for="pass-old">修改密码 · 原密码 <em>*</em><span class="label-sub">上次使用的密码</span></label>
+          <input type="password" id="pass-old" class="set-input" autocomplete="current-password" maxlength="128">
+        </div>
+        <div class="form-row">
+          <label for="pass-new">新密码 <em>*</em><span class="label-sub">6-128 个字符；成功后其他设备强制下线</span></label>
+          <input type="password" id="pass-new" class="set-input" autocomplete="new-password" maxlength="128">
+        </div>
+        <div class="form-row">
+          <label for="pass-new2">确认新密码 <em>*</em></label>
+          <input type="password" id="pass-new2" class="set-input" autocomplete="new-password" maxlength="128">
+        </div>
+        <div class="form-actions">
+          <button class="btn primary" id="btn-pass-save">修改密码</button>
+        </div>
+        <div class="pass-divider"></div>
+        <div class="form-row">
+          <label for="acct-key">GLM API Key<span class="label-sub" id="acct-key-state">你的 Agent 会话用这个 Key 计费（智谱 open.bigmodel.cn 获取）</span></label>
+          <input type="password" id="acct-key" class="set-input" autocomplete="off" spellcheck="false" maxlength="200"
+                 placeholder="输入新 Key 覆盖保存">
+        </div>
+        <div class="form-actions">
+          <button class="btn primary" id="btn-key-save">保存 Key</button>
+        </div>
+        <div id="pass-status" class="status hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-card folder-card">
+      <div class="modal-head">
+        <span>设置</span>
+        <button class="icon-close" data-close="settings-modal">✕</button>
+      </div>
+      <div class="folder-form">
+        <div class="form-row">
+          <label>启用 Agent（Claude Code Agent SDK）</label>
+          <input type="checkbox" id="set-enabled" style="width:18px;height:18px">
+        </div>
+        <div class="form-row">
+          <label for="set-baseurl">API Base URL<span class="label-sub">Anthropic 兼容端点，留空 = 官方 Anthropic</span></label>
+          <input type="text" id="set-baseurl" class="set-input" placeholder="https://api.z.ai/api/anthropic" spellcheck="false">
+        </div>
+        <div class="form-row">
+          <label for="set-model">模型<span class="label-sub">按 Base URL 选择可用模型</span></label>
+          <select id="set-model" class="set-input">
+            <option value="">加载中…</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="set-models">模型列表<span class="label-sub">逗号分隔，自定义下拉可选项</span></label>
+          <input type="text" id="set-models" class="set-input" placeholder="glm-5.3, glm-4.6, claude-sonnet-4-5" spellcheck="false">
+        </div>
+        <div class="form-row">
+          <label>状态</label>
+          <div class="parent-path" id="set-status">未检测</div>
+        </div>
+        <div class="form-actions">
+          <button class="btn" data-close="settings-modal">取消</button>
+          <button class="btn primary" id="btn-settings-save">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CI/CD 与 AI 创建图已合并为任务看板（#board-view，占据图表区），无弹窗 -->
+
+  <!-- 回到顶部 -->
+  <button id="to-top" class="to-top hidden" title="回到顶部">⌃</button>
+
+  <!-- Agent 虚窗：待机底部提示 + 唤醒后的全屏长廊 -->
+  <div id="agent-hint" class="agent-hint hidden">⏎ Enter 唤醒 Agent</div>
+  <div id="agent-veil" class="agent-veil hidden">
+    <!-- 帧保活：1px 离屏元素跑无限合成器动画（见 style.css .veil-keepalive）——
+         混合显卡环境页面静止时独显休眠，虚窗内第一次滑动/翻卡会吃 ~100ms 显卡
+         唤醒卡顿；持续产生帧需求保持 GPU 唤醒。虚窗 display:none 时动画自动停 -->
+    <div class="veil-keepalive" aria-hidden="true"></div>
+    <!-- 左上角常显退出框：独占/非独占都有，点击等同按 ESC（独占模式会话栏滑出时暂被盖住） -->
+    <button type="button" class="veil-esc" id="veil-esc" title="退出 Agent 虚窗（ESC）">ESC 退出 Agent</button>
+    <!-- 独占模式的历史会话栏：鼠标贴近屏幕左缘滑出、移开滑回；搜索/过滤/导出会话（含归档）、切换会话、新建会话、停止后台执行 -->
+    <div class="veil-sessions hidden" id="veil-sessions">
+      <div class="vs-head">
+        <span class="vs-title">历史会话</span>
+        <button type="button" class="vs-batch" id="vs-batch-export" title="批量导出：当前列表里的会话（含筛选/搜索结果与归档）打包成一个 Markdown zip">
+          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4"/><path d="m7.5 8 4.5-4.5L16.5 8"/><path d="M5 15v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4"/></svg>
+          批量导出
+        </button>
+      </div>
+      <div class="vs-tools">
+        <input type="text" id="vs-search" class="vs-search" placeholder="搜索会话（含已归档）…" autocomplete="off" spellcheck="false">
+        <div class="vs-chips" id="vs-chips">
+          <button type="button" class="vs-chip on" data-vs-filter="all">全部</button>
+          <button type="button" class="vs-chip" data-vs-filter="active">普通</button>
+          <button type="button" class="vs-chip" data-vs-filter="running">执行中</button>
+          <button type="button" class="vs-chip" data-vs-filter="pipeline">流水线</button>
+          <button type="button" class="vs-chip" data-vs-filter="archived">已归档</button>
+        </div>
+      </div>
+      <div class="vs-list" id="vs-list"></div>
+    </div>
+    <!-- 独占模式左缘竖排提条：常显提醒这里可以看历史会话（悬停/点击滑出会话栏；栏展开时整体淡出） -->
+    <div class="veil-sessions-tab" id="veil-sessions-tab" title="历史会话：鼠标贴近左缘滑出，移开滑回">历史会话</div>
+    <div class="veil-top" id="veil-top">
+      <div class="veil-corridor" id="veil-corridor"></div>
+    </div>
+    <div class="veil-ticker" id="veil-ticker"></div>
+    <div class="veil-bottom">
+      <div class="veil-context" id="veil-context"></div>
+      <div class="veil-input-row">
+        <button type="button" class="veil-new" id="veil-new" title="新建会话（按当前目录归属）">＋</button>
+        <select id="veil-model" class="veil-model" title="模型：实时切换，下一条消息生效（列表可在 ⚙ 设置里编辑）">
+          <option value="">…</option>
+        </select>
+        <input type="text" id="veil-input" autocomplete="off" spellcheck="false" placeholder="向 Agent 下达指令…（Enter 发送 · 空输入 Enter 切独占 · ESC 退出 · ↑↓/滚轮 回顾 · 点击图中组件插入索引）">
+        <button class="btn small" id="veil-exclusive" title="Agent 独占模式：回复占满全屏；历史会话栏在鼠标靠近屏幕左缘时滑出（输入框为空时按 Enter 也可切换）">⛶ 独占</button>
+        <button class="btn primary" id="veil-send">发送</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 目录悬停快速预览（半透明浮层） -->
+  <div id="folder-flyout" class="folder-flyout hidden">
+    <div class="flyout-title" id="flyout-title"></div>
+    <div class="flyout-path" id="flyout-path"></div>
+    <div class="flyout-grid" id="flyout-grid"></div>
+  </div>
+
+  <!-- 导入弹窗 -->
+  <div id="import-modal" class="modal hidden">
+    <div class="modal-card import-card">
+      <div class="modal-head">
+        <div>
+          <span>导入图</span>
+          <div class="import-target" id="import-target"></div>
+        </div>
+        <button class="icon-close" data-close="import-modal">✕</button>
+      </div>
+      <div class="quick-row">
+        <button id="btn-examples" class="btn">⚡ 一键导入 archify 示例图</button>
+        <span class="hint-inline">或使用下面的方式导入你自己的图</span>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-tab="files">拖放 / 选择文件</button>
+        <button class="tab" data-tab="json">粘贴 Archify JSON</button>
+        <button class="tab" data-tab="mermaid">粘贴 Mermaid</button>
+      </div>
+      <div class="tab-body" data-body="files">
+        <div class="dropzone" id="dropzone">
+          <p class="dz-main">把 <b>.json</b>（archify 规范）或 <b>.html</b>（archify 渲染产物）拖到这里</p>
+          <p class="dz-sub">支持一次选择多个文件 · 自动校验 + 渲染 + 入集</p>
+          <input type="file" id="file-input" multiple accept=".json,.html" hidden>
+          <button class="btn" id="btn-pick">选择文件</button>
+        </div>
+      </div>
+      <div class="tab-body hidden" data-body="json">
+        <input type="text" id="json-name" class="name-input" placeholder="图标题（可留空，取 meta.title）">
+        <textarea id="json-text" class="paste-area" placeholder='粘贴完整的 archify JSON，例如：
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "我的架构图" },
+  ...
+}'></textarea>
+        <button class="btn primary" id="btn-json">导入 JSON</button>
+      </div>
+      <div class="tab-body hidden" data-body="mermaid">
+        <input type="text" id="mermaid-name" class="name-input" placeholder="图标题（可留空）">
+        <textarea id="mermaid-text" class="paste-area" placeholder='粘贴 Mermaid flowchart（支持 subgraph 泳道、节点形状、连线标签）：
+flowchart LR
+  client[客户端] -->|请求| gw[API 网关]
+  gw --> auth{鉴权}
+  auth -->|通过| svc[业务服务]
+  auth -->|拒绝| deny[拒绝访问]'></textarea>
+        <p class="hint">flowchart → 工作流（泳道/列自动布局）；sequenceDiagram、stateDiagram 暂不支持。</p>
+        <button class="btn primary" id="btn-mermaid">导入 Mermaid</button>
+      </div>
+      <div id="import-status" class="status hidden"></div>
+    </div>
+  </div>
+
+  <script src="/public/app.js"></script>
+</body>
+</html>

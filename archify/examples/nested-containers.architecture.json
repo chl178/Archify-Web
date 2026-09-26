@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "嵌套容器示例：API 网关内部结构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "client",
+      "type": "frontend",
+      "label": "Web 客户端",
+      "pos": [60, 240],
+      "size": [130, 60]
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "API 网关",
+      "pos": [420, 100],
+      "children": [
+        {
+          "id": "auth",
+          "type": "security",
+          "label": "认证服务",
+          "pos": [20, 10],
+          "size": [150, 56]
+        },
+        {
+          "id": "ratelimit",
+          "type": "backend",
+          "label": "限流器",
+          "pos": [20, 90],
+          "size": [150, 56]
+        },
+        {
+          "id": "router",
+          "type": "messagebus",
+          "label": "路由层",
+          "pos": [20, 170],
+          "size": [150, 56]
+        }
+      ]
+    },
+    {
+      "id": "auth-stack",
+      "type": "security",
+      "label": "认证栈",
+      "pos": [740, 80],
+      "children": [
+        {
+          "id": "idp",
+          "type": "security",
+          "label": "身份提供方",
+          "pos": [20, 10],
+          "children": [
+            { "id": "idp-core", "type": "security", "label": "核心库", "pos": [16, 8], "size": [118, 40] },
+            { "id": "idp-cache", "type": "database", "label": "会话缓存", "pos": [16, 60], "size": [118, 40] }
+          ]
+        },
+        { "id": "mfa", "type": "security", "label": "MFA 服务", "pos": [20, 230], "size": [160, 56] }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "主数据库",
+      "pos": [740, 480],
+      "size": [150, 60]
+    }
+  ],
+  "connections": [
+    { "id": "c1", "from": "client", "to": "auth", "label": "HTTPS", "labelDy": -20 },
+    { "id": "c2", "from": "client", "to": "ratelimit", "label": "API 请求", "labelDy": 22, "labelDx": 46 },
+    { "id": "c3", "from": "auth", "to": "idp-core", "label": "OAuth2" },
+    { "id": "c4", "from": "router", "to": "db", "label": "SQL" },
+    { "id": "c5", "from": "idp", "to": "mfa", "label": "二次验证", "fromSide": "bottom", "toSide": "top" }
+  ]
+}

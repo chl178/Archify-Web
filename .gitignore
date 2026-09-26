@@ -1,0 +1,27 @@
+# ---- 运行数据（含用户表/API Key/会话，绝不入库）----
+gallery/
+projects/
+cicd.json
+diagrams.json
+
+# ---- 依赖 ----
+node_modules/
+archify/node_modules/
+
+# ---- 本机专属/对照备份 ----
+archify-backup-original/
+backup-*/
+.zcode/
+.zcodeignore
+AGENTS.md
+dev-container.sh
+
+# ---- 日志与临时产物 ----
+*.log
+.tmp*
+.tmp-*.json
+nested-*.html
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
